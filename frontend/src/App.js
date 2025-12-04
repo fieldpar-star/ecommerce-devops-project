@@ -97,7 +97,7 @@ function App() {
     <div className="App">
       <div className="container">
         <header className="header">
-          <h1>🛍️ E-commerce Product Manager PROD V2</h1>
+          <h1>🛍️ E-commerce Product Manager PROD V3</h1>
           <button 
             className="btn btn-primary"
             onClick={() => setShowForm(!showForm)}
