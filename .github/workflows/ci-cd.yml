@@ -116,7 +116,7 @@ jobs:
           cache-from: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache,mode=max
 
-  # Deploy to AWS ECS
+  # Smart Deploy - Deploys to AWS if infrastructure exists, skips gracefully if not
   deploy:
     needs: [backend-build, frontend-build]
     runs-on: ubuntu-latest
@@ -129,27 +129,112 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Force ECS Deployment
+      - name: Check AWS Infrastructure Status
+        id: infra_check
+        continue-on-error: true
         run: |
-          echo "🚀 Deploying to AWS ECS..."
+          echo "🔍 Checking if AWS ECS cluster exists..."
           
+          CLUSTER_STATUS=$(aws ecs describe-clusters \
+            --clusters ecommerce-cluster-dev \
+            --region us-east-1 \
+            --query 'clusters[0].status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          echo "Cluster status: $CLUSTER_STATUS"
+          
+          if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+            echo "ECS cluster is active"
+            echo "cluster_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "ECS cluster not found or inactive"
+            echo "cluster_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to AWS ECS
+        if: steps.infra_check.outputs.cluster_exists == 'true'
+        run: |
+          echo "Deploying to AWS ECS..."
+          echo "Cluster: ecommerce-cluster-dev"
+          echo "Region: us-east-1"
+          echo ""
+          
+          # Update frontend service
+          echo "Updating frontend service..."
           aws ecs update-service \
             --cluster ecommerce-cluster-dev \
             --service ecommerce-frontend-dev \
             --force-new-deployment \
-            --region us-east-1
+            --region us-east-1 > /dev/null
           
+          # Update backend service
+          echo "Updating backend service..."
           aws ecs update-service \
             --cluster ecommerce-cluster-dev \
             --service ecommerce-backend-dev \
             --force-new-deployment \
-            --region us-east-1
+            --region us-east-1 > /dev/null
           
-          echo "✅ Deployment triggered! Services will update in 3-5 minutes."
+          echo ""
+          echo "Deployment triggered successfully!"
+          echo "Services will update in 3-5 minutes"
+          echo ""
+          echo "Monitor deployment:"
+          echo "  aws ecs describe-services --cluster ecommerce-cluster-dev --services ecommerce-frontend-dev ecommerce-backend-dev --region us-east-1"
 
       - name: Get Application URL
+        if: steps.infra_check.outputs.cluster_exists == 'true'
         run: |
-          echo "🌐 Application URL:"
-          echo "http://ecommerce-alb-dev-*.us-east-1.elb.amazonaws.com"
-          echo "Check deployment status:"
-          echo "aws ecs describe-services --cluster ecommerce-cluster-dev --services ecommerce-frontend-dev ecommerce-backend-dev --region us-east-1"
+          echo "Application Access:"
+          
+          # Try to get ALB DNS name
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --region us-east-1 \
+            --query 'LoadBalancers[?contains(LoadBalancerName, `ecommerce-alb-dev`)].DNSName' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$ALB_DNS" ]; then
+            echo "  Application URL: http://$ALB_DNS"
+          else
+            echo "  Run 'terraform output alb_url' to get your application URL"
+          fi
+
+      - name: Skip AWS Deployment
+        if: steps.infra_check.outputs.cluster_exists != 'true'
+        run: |
+          echo " AWS Infrastructure Not Found"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "The ECS cluster 'ecommerce-cluster-dev' does not exist."
+          echo "AWS deployment has been skipped."
+          echo ""
+          echo " However, your code has been:"
+          echo "   • Built successfully"
+          echo "   • Tested"
+          echo "   • Pushed to Docker Hub"
+          echo ""
+          echo " To deploy to AWS, run:"
+          echo "   cd terraform"
+          echo "   ./deploy.sh"
+          echo ""
+          echo " Your Docker images are available at:"
+          echo "   • ${{ env.BACKEND_IMAGE }}:latest"
+          echo "   • ${{ env.FRONTEND_IMAGE }}:latest"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo ""
+          echo " Pipeline Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo " Backend: Built and pushed to Docker Hub"
+          echo " Frontend: Built and pushed to Docker Hub"
+          
+          if [ "${{ steps.infra_check.outputs.cluster_exists }}" = "true" ]; then
+            echo " AWS Deployment: Triggered successfully"
+          else
+            echo "  AWS Deployment: Skipped (no infrastructure)"
+          fi
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
