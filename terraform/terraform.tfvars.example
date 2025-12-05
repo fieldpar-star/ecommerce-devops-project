@@ -1,0 +1,21 @@
+
+aws_region         = "us-east-1"
+environment        = "dev"
+project_name       = "ecommerce"
+
+# Database Configuration
+db_name            = "ecommerce"
+db_username        = "postgres"
+db_password        = "your-secure-password-here"  # Use a strong password!
+db_instance_class  = "db.t3.micro"  # Free tier eligible
+
+# Docker Images 
+backend_image      = "bloomstechdev/ecommerce-backend:latest"
+frontend_image     = "bloomstechdev/ecommerce-frontend:latest"
+
+# ECS Configuration
+backend_cpu        = 256
+backend_memory     = 512
+frontend_cpu       = 256
+frontend_memory    = 512
+desired_count      = 1
