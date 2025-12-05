@@ -3,6 +3,7 @@ import axios from 'axios';
 import './App.css';
 
 function App() {
+
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -13,6 +14,7 @@ function App() {
     description: '',
     price: '',
     stock: ''
+
   });
 
   const API_URL = '/api/products';

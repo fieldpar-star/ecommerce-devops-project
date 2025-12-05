@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, 'feature/**' ]
   pull_request:
     branches: [ main ]
 
@@ -56,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./backend
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:buildcache
@@ -110,17 +110,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache,mode=max
 
-  # Smart Deploy - Deploys to AWS if infrastructure exists, skips gracefully if not
+  # Smart Deploy - Only runs on main branch after merge
   deploy:
     needs: [backend-build, frontend-build]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -133,7 +133,7 @@ jobs:
         id: infra_check
         continue-on-error: true
         run: |
-          echo "🔍 Checking if AWS ECS cluster exists..."
+          echo " Checking if AWS ECS cluster exists..."
           
           CLUSTER_STATUS=$(aws ecs describe-clusters \
             --clusters ecommerce-cluster-dev \
@@ -144,23 +144,25 @@ jobs:
           echo "Cluster status: $CLUSTER_STATUS"
           
           if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
-            echo "ECS cluster is active"
+            echo " ECS cluster is active"
             echo "cluster_exists=true" >> $GITHUB_OUTPUT
           else
-            echo "ECS cluster not found or inactive"
+            echo "  ECS cluster not found or inactive"
             echo "cluster_exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Deploy to AWS ECS
         if: steps.infra_check.outputs.cluster_exists == 'true'
         run: |
-          echo "Deploying to AWS ECS..."
+          echo " Deploying to Production (AWS ECS)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Cluster: ecommerce-cluster-dev"
           echo "Region: us-east-1"
+          echo "Trigger: Merge to main branch"
           echo ""
           
           # Update frontend service
-          echo "Updating frontend service..."
+          echo " Updating frontend service..."
           aws ecs update-service \
             --cluster ecommerce-cluster-dev \
             --service ecommerce-frontend-dev \
@@ -168,7 +170,7 @@ jobs:
             --region us-east-1 > /dev/null
           
           # Update backend service
-          echo "Updating backend service..."
+          echo " Updating backend service..."
           aws ecs update-service \
             --cluster ecommerce-cluster-dev \
             --service ecommerce-backend-dev \
@@ -176,16 +178,14 @@ jobs:
             --region us-east-1 > /dev/null
           
           echo ""
-          echo "Deployment triggered successfully!"
-          echo "Services will update in 3-5 minutes"
-          echo ""
-          echo "Monitor deployment:"
-          echo "  aws ecs describe-services --cluster ecommerce-cluster-dev --services ecommerce-frontend-dev ecommerce-backend-dev --region us-east-1"
+          echo " Production deployment triggered successfully!"
+          echo " Services will update in 3-5 minutes"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Get Application URL
         if: steps.infra_check.outputs.cluster_exists == 'true'
         run: |
-          echo "Application Access:"
+          echo " Production Application:"
           
           # Try to get ALB DNS name
           ALB_DNS=$(aws elbv2 describe-load-balancers \
@@ -194,7 +194,7 @@ jobs:
             --output text 2>/dev/null || echo "")
           
           if [ -n "$ALB_DNS" ]; then
-            echo "  Application URL: http://$ALB_DNS"
+            echo "  URL: http://$ALB_DNS"
           else
             echo "  Run 'terraform output alb_url' to get your application URL"
           fi
@@ -202,11 +202,11 @@ jobs:
       - name: Skip AWS Deployment
         if: steps.infra_check.outputs.cluster_exists != 'true'
         run: |
-          echo " AWS Infrastructure Not Found"
+          echo "  AWS Infrastructure Not Found"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "The ECS cluster 'ecommerce-cluster-dev' does not exist."
-          echo "AWS deployment has been skipped."
+          echo "Production deployment has been skipped."
           echo ""
           echo " However, your code has been:"
           echo "   • Built successfully"
@@ -223,18 +223,26 @@ jobs:
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Deployment Summary
-        if: always()
+  # Pull Request Summary
+  pr-summary:
+    needs: [backend-build, frontend-build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: PR Build Summary
         run: |
-          echo ""
-          echo " Pipeline Summary"
+          echo " Pull Request Build Summary"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo " Backend: Built and pushed to Docker Hub"
-          echo " Frontend: Built and pushed to Docker Hub"
-          
-          if [ "${{ steps.infra_check.outputs.cluster_exists }}" = "true" ]; then
-            echo " AWS Deployment: Triggered successfully"
-          else
-            echo "  AWS Deployment: Skipped (no infrastructure)"
-          fi
+          echo " Backend: Built and tested successfully"
+          echo " Frontend: Built and tested successfully"
+          echo ""
+          echo " Note: Docker images are NOT pushed to Docker Hub for PRs"
+          echo "   Images will be pushed after merge to main"
+          echo ""
+          echo " Next Steps:"
+          echo "   1. Request review from team member"
+          echo "   2. Address any feedback"
+          echo "   3. Get approval"
+          echo "   4. Merge to main"
+          echo "   5. Automatic deployment to production"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
