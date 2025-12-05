@@ -160,7 +160,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "postgres" {
   identifier             = "${var.project_name}-db-${var.environment}"
   engine                 = "postgres"
-  engine_version         = "15"  # Uses latest 15.x version
+  engine_version         = "15"
   instance_class         = var.db_instance_class
   allocated_storage      = 20
   storage_type           = "gp2"
@@ -200,17 +200,36 @@ resource "aws_lb_target_group" "frontend" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     healthy_threshold   = 2
     unhealthy_threshold = 10
     timeout             = 30
     interval            = 60
-    matcher             = "200-299"
+    matcher             = "200"
   }
 }
 
-# ALB Listener
-resource "aws_lb_listener" "frontend" {
+# ALB Target Group for Backend
+resource "aws_lb_target_group" "backend" {
+  name        = "${var.project_name}-backend-tg-${var.environment}"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    enabled             = true
+    path                = "/health"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+}
+
+# ALB Listener - Default to Frontend
+resource "aws_lb_listener" "main" {
   load_balancer_arn = aws_lb.main.arn
   port              = "80"
   protocol          = "HTTP"
@@ -218,6 +237,23 @@ resource "aws_lb_listener" "frontend" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.frontend.arn
+  }
+}
+
+# ALB Listener Rule - Route /api/* to Backend
+resource "aws_lb_listener_rule" "backend" {
+  listener_arn = aws_lb_listener.main.arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/api/*", "/health"]
+    }
   }
 }
 
@@ -369,10 +405,18 @@ resource "aws_ecs_service" "backend" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.backend.arn
+    container_name   = "backend"
+    container_port   = 3000
+  }
+
+  depends_on = [aws_lb_listener.main]
 }
 
 # Frontend ECS Service
@@ -395,5 +439,5 @@ resource "aws_ecs_service" "frontend" {
     container_port   = 80
   }
 
-  depends_on = [aws_lb_listener.frontend]
+  depends_on = [aws_lb_listener.main]
 }
